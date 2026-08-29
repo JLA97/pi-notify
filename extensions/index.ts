@@ -9,6 +9,8 @@
  *   `agent_settled`, so without this hook they would notify nothing.
  *
  * Terminal protocol support:
+ * - macOS native (osascript): used when running inside tmux, which swallows
+ *   OSC sequences unless allow-passthrough is enabled
  * - OSC 777: Ghostty, iTerm2, WezTerm, rxvt-unicode (default)
  * - OSC 99: Kitty
  * - Windows toast: Windows Terminal (WSL)
@@ -56,10 +58,28 @@ export function buildOSC99Parts(title: string, body: string): string[] {
   ];
 }
 
-export type NotifyBackend = "windows-toast" | "osc-99" | "osc-777";
+export type NotifyBackend = "macos-notification" | "windows-toast" | "osc-99" | "osc-777";
 
-export function pickBackend(env: NodeJS.ProcessEnv): NotifyBackend {
+export const BACKENDS: readonly NotifyBackend[] = [
+  "macos-notification",
+  "windows-toast",
+  "osc-99",
+  "osc-777",
+];
+
+export function pickBackend(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NotifyBackend {
+  const forced = env.PI_NOTIFY_BACKEND as NotifyBackend | undefined;
+  if (forced) {
+    if (BACKENDS.includes(forced)) return forced;
+    // Unknown override: ignore it rather than stay silent.
+  }
   if (env.WT_SESSION) return "windows-toast";
+  // tmux intercepts the pane's output, so OSC sequences written to stdout
+  // never reach the outer terminal. Fall back to a native notification.
+  if (env.TMUX && platform === "darwin") return "macos-notification";
   if (env.KITTY_WINDOW_ID) return "osc-99";
   return "osc-777";
 }
@@ -67,24 +87,44 @@ export function pickBackend(env: NodeJS.ProcessEnv): NotifyBackend {
 /** Injectable IO so tests never touch the real stdout / child processes. */
 export type NotifyIO = {
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
   write?: (chunk: string) => void;
   execFile?: (file: string, args: string[]) => void;
 };
 
+function defaultExecFile(io: NotifyIO): (file: string, args: string[]) => void {
+  return (
+    io.execFile ??
+    ((file: string, args: string[]) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { execFile: run } = require("child_process") as typeof import("child_process");
+      run(file, args);
+    })
+  );
+}
+
+function escapeAppleScript(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+export function macosNotificationScript(title: string, body: string): string {
+  return `display notification "${escapeAppleScript(body)}" with title "${escapeAppleScript(title)}"`;
+}
+
 export function notify(title: string, body: string, io: NotifyIO = {}): void {
   const env = io.env ?? process.env;
   const write = io.write ?? ((chunk: string) => process.stdout.write(chunk));
-  const backend = pickBackend(env);
+  const backend = pickBackend(env, io.platform);
 
   if (backend === "windows-toast") {
-    const execFile =
-      io.execFile ??
-      ((file: string, args: string[]) => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { execFile: run } = require("child_process") as typeof import("child_process");
-        run(file, args);
-      });
+    const execFile = defaultExecFile(io);
     execFile("powershell.exe", ["-NoProfile", "-Command", windowsToastScript(title, body)]);
+    return;
+  }
+
+  if (backend === "macos-notification") {
+    const execFile = defaultExecFile(io);
+    execFile("osascript", ["-e", macosNotificationScript(title, body)]);
     return;
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-notify",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Native terminal notifications (OSC 777/99, Windows toast) when Pi finishes a run or pauses waiting for your answer.",
   "keywords": [
     "pi-package"

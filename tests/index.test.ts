@@ -5,6 +5,7 @@ import notifyExtension, {
   buildOSC777,
   buildOSC99Parts,
   isDisabled,
+  macosNotificationScript,
   notify,
   parseWaitTools,
   pickBackend,
@@ -27,10 +28,13 @@ function register(handlers: CapturedHandlers): ExtensionAPI {
   } as unknown as ExtensionAPI;
 }
 
-/** Run `fn` with process.stdout.write replaced by a capture buffer. */
+/** Run `fn` with stdout.write captured and TMUX unset (keeps the OSC path, no real notifications). */
 function captureStdout(fn: () => void): string[] {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
+  const hadTmux = "TMUX" in process.env;
+  const tmux = process.env.TMUX;
+  delete process.env.TMUX;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (process.stdout as any).write = (chunk: string) => {
     chunks.push(chunk);
@@ -41,6 +45,7 @@ function captureStdout(fn: () => void): string[] {
   } finally {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (process.stdout as any).write = original;
+    if (hadTmux) process.env.TMUX = tmux;
   }
   return chunks;
 }
@@ -118,6 +123,24 @@ test("pickBackend routes by terminal environment", () => {
   assert.equal(pickBackend({} as NodeJS.ProcessEnv), "osc-777");
 });
 
+test("pickBackend falls back to macOS notifications inside tmux", () => {
+  const tmuxEnv = { TMUX: "/tmp/tmux-501/default" } as NodeJS.ProcessEnv;
+  assert.equal(pickBackend(tmuxEnv, "darwin"), "macos-notification");
+  // Non-macOS inside tmux: no better option, keep OSC and let the user override.
+  assert.equal(pickBackend(tmuxEnv, "linux"), "osc-777");
+  // tmux detection must not leak into plain terminals.
+  assert.equal(pickBackend({} as NodeJS.ProcessEnv, "darwin"), "osc-777");
+});
+
+test("pickBackend honors PI_NOTIFY_BACKEND override", () => {
+  assert.equal(pickBackend({ PI_NOTIFY_BACKEND: "osc-99" } as NodeJS.ProcessEnv), "osc-99");
+  // Forced backend wins even inside tmux on macOS.
+  const env = { TMUX: "1", PI_NOTIFY_BACKEND: "osc-777" } as NodeJS.ProcessEnv;
+  assert.equal(pickBackend(env, "darwin"), "osc-777");
+  // Unknown backend name is ignored, routing proceeds normally.
+  assert.equal(pickBackend({ PI_NOTIFY_BACKEND: "nope" } as NodeJS.ProcessEnv), "osc-777");
+});
+
 test("OSC 777 escapes into a single write", () => {
   const out = buildOSC777("Pi", "Ready for input");
   assert.equal(out, "\x1b]777;notify;Pi;Ready for input\x07");
@@ -157,4 +180,22 @@ test("notify writes OSC sequences without spawning processes", () => {
   assert.equal(writes.length, 2); // unchanged: windows path never writes stdout
   assert.equal(spawns.length, 1);
   assert.equal(spawns[0]![0], "powershell.exe");
+
+  notify("Pi", "Waiting for your answer", {
+    ...io,
+    env: { TMUX: "1" } as NodeJS.ProcessEnv,
+    platform: "darwin",
+  });
+  assert.equal(writes.length, 2); // macOS path never writes stdout either
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[1]![0], "osascript");
+  assert.deepEqual(spawns[1]!.slice(1), ["-e", 'display notification "Waiting for your answer" with title "Pi"']);
+});
+
+test("macosNotificationScript escapes quotes and backslashes", () => {
+  const script = macosNotificationScript('Pi "pro"', 'a\\b "c"');
+  assert.equal(
+    script,
+    'display notification "a\\\\b \\"c\\"" with title "Pi \\"pro\\""',
+  );
 });

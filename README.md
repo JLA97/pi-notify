@@ -11,13 +11,20 @@ Native terminal notifications for [Pi](https://github.com/earendil-works/pi-codi
 
 ## Terminal support
 
-The protocol is picked automatically from your environment:
+The backend is picked automatically from your environment:
 
-| Environment | Protocol | Terminals |
+| Environment | Backend | Terminals |
 | --- | --- | --- |
-| Default | OSC 777 | Ghostty, iTerm2, WezTerm, rxvt-unicode |
-| `KITTY_WINDOW_ID` set | OSC 99 | Kitty |
+| Inside tmux on macOS | macOS native notification (`osascript`) | any outer terminal |
 | `WT_SESSION` set (WSL) | Windows toast | Windows Terminal |
+| `KITTY_WINDOW_ID` set | OSC 99 | Kitty |
+| Default | OSC 777 | Ghostty, iTerm2, WezTerm, rxvt-unicode |
+
+> **Why tmux needs a fallback:** tmux intercepts the pane's output, so OSC 777/99
+> escape sequences written to Pi's stdout never reach the outer terminal
+> (`allow-passthrough` is off by default). A native macOS notification bypasses
+> the terminal entirely. On Linux inside tmux, either enable tmux
+> `allow-passthrough` and force `PI_NOTIFY_BACKEND=osc-777`, or use a wrapper.
 
 ## Install
 
@@ -36,6 +43,7 @@ pi -e git:github.com/JLA97/pi-notify
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PI_NOTIFY_WAIT_TOOLS` | `askUserQuestion` | Comma-separated list of tool names that count as "waiting for the human". Add your own dialog tools here. |
+| `PI_NOTIFY_BACKEND` | auto | Force a backend: `macos-notification`, `windows-toast`, `osc-99`, or `osc-777`. |
 | `PI_NOTIFY_DISABLE` | unset | Set to `1` or `true` to silence all notifications. |
 
 ## Development
