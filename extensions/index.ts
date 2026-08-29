@@ -16,6 +16,30 @@
  * - Windows toast: Windows Terminal (WSL)
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+
+/**
+ * OSC sequences must reach the outer terminal. In fullscreen TUI mode the
+ * app may own/wrap stdout, so write directly to the controlling tty and
+ * fall back to stdout. Set PI_NOTIFY_STDOUT_ONLY=1 to force stdout (tests,
+ * or piping into another consumer).
+ */
+export function writeForTerminal(chunk: string): void {
+  if (process.env.PI_NOTIFY_STDOUT_ONLY === "1") {
+    process.stdout.write(chunk);
+    return;
+  }
+  try {
+    const fd = fs.openSync("/dev/tty", "w");
+    try {
+      fs.writeSync(fd, chunk);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    process.stdout.write(chunk);
+  }
+}
 
 /** Tools that block on a human-facing dialog. Override via PI_NOTIFY_WAIT_TOOLS. */
 const DEFAULT_WAIT_TOOLS = ["askUserQuestion"];
@@ -113,7 +137,7 @@ export function macosNotificationScript(title: string, body: string): string {
 
 export function notify(title: string, body: string, io: NotifyIO = {}): void {
   const env = io.env ?? process.env;
-  const write = io.write ?? ((chunk: string) => process.stdout.write(chunk));
+  const write = io.write ?? writeForTerminal;
   const backend = pickBackend(env, io.platform);
 
   if (backend === "windows-toast") {

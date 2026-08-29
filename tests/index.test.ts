@@ -28,13 +28,16 @@ function register(handlers: CapturedHandlers): ExtensionAPI {
   } as unknown as ExtensionAPI;
 }
 
-/** Run `fn` with stdout.write captured and TMUX unset (keeps the OSC path, no real notifications). */
+/** Run `fn` with stdout.write captured, TMUX unset, and writes forced to stdout (no real notifications). */
 function captureStdout(fn: () => void): string[] {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
   const hadTmux = "TMUX" in process.env;
   const tmux = process.env.TMUX;
+  const hadForce = "PI_NOTIFY_STDOUT_ONLY" in process.env;
+  const force = process.env.PI_NOTIFY_STDOUT_ONLY;
   delete process.env.TMUX;
+  process.env.PI_NOTIFY_STDOUT_ONLY = "1";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (process.stdout as any).write = (chunk: string) => {
     chunks.push(chunk);
@@ -46,6 +49,8 @@ function captureStdout(fn: () => void): string[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (process.stdout as any).write = original;
     if (hadTmux) process.env.TMUX = tmux;
+    if (hadForce) process.env.PI_NOTIFY_STDOUT_ONLY = force;
+    else delete process.env.PI_NOTIFY_STDOUT_ONLY;
   }
   return chunks;
 }
