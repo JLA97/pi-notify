@@ -28,16 +28,16 @@ function register(handlers: CapturedHandlers): ExtensionAPI {
   } as unknown as ExtensionAPI;
 }
 
-/** Run `fn` with stdout.write captured, TMUX unset, and writes forced to stdout (no real notifications). */
+/** Run `fn` with stdout.write captured, backend forced to OSC (no real notifications). */
 function captureStdout(fn: () => void): string[] {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
-  const hadTmux = "TMUX" in process.env;
-  const tmux = process.env.TMUX;
   const hadForce = "PI_NOTIFY_STDOUT_ONLY" in process.env;
   const force = process.env.PI_NOTIFY_STDOUT_ONLY;
-  delete process.env.TMUX;
+  const hadBackend = "PI_NOTIFY_BACKEND" in process.env;
+  const backend = process.env.PI_NOTIFY_BACKEND;
   process.env.PI_NOTIFY_STDOUT_ONLY = "1";
+  process.env.PI_NOTIFY_BACKEND = "osc-777";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (process.stdout as any).write = (chunk: string) => {
     chunks.push(chunk);
@@ -48,9 +48,10 @@ function captureStdout(fn: () => void): string[] {
   } finally {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (process.stdout as any).write = original;
-    if (hadTmux) process.env.TMUX = tmux;
     if (hadForce) process.env.PI_NOTIFY_STDOUT_ONLY = force;
     else delete process.env.PI_NOTIFY_STDOUT_ONLY;
+    if (hadBackend) process.env.PI_NOTIFY_BACKEND = backend;
+    else delete process.env.PI_NOTIFY_BACKEND;
   }
   return chunks;
 }
@@ -140,11 +141,11 @@ test("pickBackend prefers native notifications on macOS", () => {
 
 test("pickBackend honors PI_NOTIFY_BACKEND override", () => {
   assert.equal(pickBackend({ PI_NOTIFY_BACKEND: "osc-99" } as NodeJS.ProcessEnv), "osc-99");
-  // Forced backend wins even inside tmux on macOS.
-  const env = { TMUX: "1", PI_NOTIFY_BACKEND: "osc-777" } as NodeJS.ProcessEnv;
+  // Forced backend wins even on macOS.
+  const env = { PI_NOTIFY_BACKEND: "osc-777" } as NodeJS.ProcessEnv;
   assert.equal(pickBackend(env, "darwin"), "osc-777");
   // Unknown backend name is ignored, routing proceeds normally.
-  assert.equal(pickBackend({ PI_NOTIFY_BACKEND: "nope" } as NodeJS.ProcessEnv), "osc-777");
+  assert.equal(pickBackend({ PI_NOTIFY_BACKEND: "nope" } as NodeJS.ProcessEnv, "linux"), "osc-777");
 });
 
 test("OSC 777 escapes into a single write", () => {
@@ -171,6 +172,7 @@ test("notify writes OSC sequences without spawning processes", () => {
   const spawns: string[][] = [];
   const io = {
     env: {} as NodeJS.ProcessEnv,
+    platform: "linux" as NodeJS.Platform,
     write: (chunk: string) => writes.push(chunk),
     execFile: (file: string, args: string[]) => spawns.push([file, ...args]),
   };
@@ -189,7 +191,7 @@ test("notify writes OSC sequences without spawning processes", () => {
 
   notify("Pi", "Waiting for your answer", {
     ...io,
-    env: { TMUX: "1" } as NodeJS.ProcessEnv,
+    env: {} as NodeJS.ProcessEnv,
     platform: "darwin",
   });
   assert.equal(writes.length, 2); // macOS path never writes stdout either
