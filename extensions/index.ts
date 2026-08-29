@@ -101,9 +101,11 @@ export function pickBackend(
     // Unknown override: ignore it rather than stay silent.
   }
   if (env.WT_SESSION) return "windows-toast";
-  // tmux intercepts the pane's output, so OSC sequences written to stdout
-  // never reach the outer terminal. Fall back to a native notification.
-  if (env.TMUX && platform === "darwin") return "macos-notification";
+  // macOS: native notifications are the most reliable path — they work inside
+  // tmux and regardless of the terminal's OSC support/permissions. OSC 777/99
+  // remain available via PI_NOTIFY_BACKEND for users whose terminal delivers
+  // them and prefer terminal-attributed notifications.
+  if (platform === "darwin") return "macos-notification";
   if (env.KITTY_WINDOW_ID) return "osc-99";
   return "osc-777";
 }

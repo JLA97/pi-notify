@@ -124,17 +124,18 @@ test("isDisabled accepts 1/true only", () => {
 
 test("pickBackend routes by terminal environment", () => {
   assert.equal(pickBackend({ WT_SESSION: "x" } as NodeJS.ProcessEnv), "windows-toast");
-  assert.equal(pickBackend({ KITTY_WINDOW_ID: "1" } as NodeJS.ProcessEnv), "osc-99");
-  assert.equal(pickBackend({} as NodeJS.ProcessEnv), "osc-777");
+  const linux = { KITTY_WINDOW_ID: "1" } as NodeJS.ProcessEnv;
+  assert.equal(pickBackend(linux, "linux"), "osc-99");
+  assert.equal(pickBackend({} as NodeJS.ProcessEnv, "linux"), "osc-777");
 });
 
-test("pickBackend falls back to macOS notifications inside tmux", () => {
+test("pickBackend prefers native notifications on macOS", () => {
+  // Works everywhere on macOS: tmux, plain terminal, missing OSC permissions.
+  assert.equal(pickBackend({} as NodeJS.ProcessEnv, "darwin"), "macos-notification");
   const tmuxEnv = { TMUX: "/tmp/tmux-501/default" } as NodeJS.ProcessEnv;
   assert.equal(pickBackend(tmuxEnv, "darwin"), "macos-notification");
   // Non-macOS inside tmux: no better option, keep OSC and let the user override.
   assert.equal(pickBackend(tmuxEnv, "linux"), "osc-777");
-  // tmux detection must not leak into plain terminals.
-  assert.equal(pickBackend({} as NodeJS.ProcessEnv, "darwin"), "osc-777");
 });
 
 test("pickBackend honors PI_NOTIFY_BACKEND override", () => {

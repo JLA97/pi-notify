@@ -15,16 +15,17 @@ The backend is picked automatically from your environment:
 
 | Environment | Backend | Terminals |
 | --- | --- | --- |
-| Inside tmux on macOS | macOS native notification (`osascript`) | any outer terminal |
+| macOS (default) | macOS native notification (`osascript`) | any terminal, tmux included |
 | `WT_SESSION` set (WSL) | Windows toast | Windows Terminal |
-| `KITTY_WINDOW_ID` set | OSC 99 | Kitty |
-| Default | OSC 777 | Ghostty, iTerm2, WezTerm, rxvt-unicode |
+| `KITTY_WINDOW_ID` set (non-macOS) | OSC 99 | Kitty |
+| Default (non-macOS) | OSC 777 | Ghostty, iTerm2, WezTerm, rxvt-unicode |
 
-> **Why tmux needs a fallback:** tmux intercepts the pane's output, so OSC 777/99
-> escape sequences written to Pi's stdout never reach the outer terminal
-> (`allow-passthrough` is off by default). A native macOS notification bypasses
-> the terminal entirely. On Linux inside tmux, either enable tmux
-> `allow-passthrough` and force `PI_NOTIFY_BACKEND=osc-777`, or use a wrapper.
+> **Why macOS defaults to native notifications:** they work inside tmux (which
+> intercepts OSC sequences written to the pane) and regardless of the terminal's
+> OSC support or its notification permission. If your terminal delivers OSC
+> notifications and you prefer them (notification is attributed to the terminal,
+> clicking can focus it), force it with `PI_NOTIFY_BACKEND=osc-777` (or `osc-99`).
+> OSC writes go directly to `/dev/tty` when available, bypassing TUI-owned stdout.
 
 ## Install
 
