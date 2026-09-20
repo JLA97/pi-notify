@@ -4,9 +4,19 @@
  * Sends a native terminal notification when Pi is waiting for you:
  * - `agent_settled`: a full run finished (no retry / compaction / queued
  *   follow-up left) — Pi is ready for your next message.
- * - `tool_execution_start` for dialog tools (e.g. askUserQuestion): the run
- *   is paused mid-flight waiting for your answer. These pauses never fire
+ * - `ui_prompt_start`: any extension opened a blocking dialog
+ *   (ctx.ui select/confirm/input/editor/custom) — the run is paused
+ *   mid-flight waiting for your answer. These pauses never fire
  *   `agent_settled`, so without this hook they would notify nothing.
+ *   Covers askUserQuestion and every other dialog tool without a
+ *   tool-name list (pi 0.84.4+).
+ * - `tool_execution_start` for wait tools (default askUserQuestion):
+ *   fallback for pi versions without ui_prompt events, no-UI
+ *   environments, and tools that block on a human without opening a
+ *   ctx.ui dialog.
+ *
+ * The two waiting triggers share a short cooldown so one waiting span
+ * notifies once (see WAITING_NOTIFY_COOLDOWN_MS).
  *
  * Terminal protocol support:
  * - macOS native (osascript): used when running inside tmux, which swallows
@@ -41,7 +51,11 @@ export function writeForTerminal(chunk: string): void {
   }
 }
 
-/** Tools that block on a human-facing dialog. Override via PI_NOTIFY_WAIT_TOOLS. */
+/**
+ * Fallback wait-tools list: tool names that block waiting on the human.
+ * Primary coverage is ui_prompt_start, which fires for every ctx.ui dialog
+ * regardless of tool name. Override via PI_NOTIFY_WAIT_TOOLS.
+ */
 const DEFAULT_WAIT_TOOLS = ["askUserQuestion"];
 
 export function parseWaitTools(raw: string | undefined): string[] {
@@ -162,10 +176,43 @@ export function notify(title: string, body: string, io: NotifyIO = {}): void {
   write(buildOSC777(title, body));
 }
 
+/**
+ * Cooldown between "waiting" notifications. Whoever just saw or just answered
+ * a prompt is still at the keyboard, so rapid sequences coalesce into one
+ * notification: tool_execution_start → ui_prompt_start for the same dialog,
+ * or select → follow-up input (askUserQuestion's "Other…" path).
+ */
+export const WAITING_NOTIFY_COOLDOWN_MS = 2000;
+
+/** Notification body for a blocking UI prompt, with the prompt title when available. */
+export function waitingBody(title: string | undefined): string {
+  if (!title) return "Waiting for your answer";
+  const oneLine = title.replace(/\s+/g, " ").trim();
+  if (!oneLine) return "Waiting for your answer";
+  const capped = oneLine.length > 120 ? `${oneLine.slice(0, 117)}…` : oneLine;
+  return `Waiting: ${capped}`;
+}
+
+/** Coalesced "waiting" notifier: skips sends inside the cooldown window. */
+export function createWaitingNotifier(
+  send: (body: string) => void,
+  now: () => number = Date.now,
+): (body: string) => boolean {
+  let lastNotifiedAt = Number.NEGATIVE_INFINITY;
+  return (body: string) => {
+    const at = now();
+    if (at - lastNotifiedAt < WAITING_NOTIFY_COOLDOWN_MS) return false;
+    lastNotifiedAt = at;
+    send(body);
+    return true;
+  };
+}
+
 export default function (pi: ExtensionAPI): void {
   if (isDisabled(process.env.PI_NOTIFY_DISABLE)) return;
 
   const waitTools = new Set(parseWaitTools(process.env.PI_NOTIFY_WAIT_TOOLS));
+  const notifyWaiting = createWaitingNotifier((body) => notify("Pi", body));
 
   // `agent_end` fires after each low-level run; Pi may still retry, compact,
   // or continue with queued follow-ups. Notify only after the full run settles.
@@ -173,12 +220,22 @@ export default function (pi: ExtensionAPI): void {
     notify("Pi", "Ready for input");
   });
 
-  // Tools that open a dialog and block waiting for the human (e.g.
-  // askUserQuestion) pause the run without settling it, so the handler
-  // above stays silent. Notify when such a tool starts waiting.
+  // Primary: any blocking ctx.ui dialog from any extension — no tool-name
+  // list to maintain, and the prompt title lands in the notification body.
+  // askUserQuestion and every other dialog tool are covered here. On pi
+  // versions older than 0.84.4 this event never fires; the fallback below
+  // keeps the previous behavior.
+  pi.on("ui_prompt_start", async (event) => {
+    notifyWaiting(waitingBody(event.title));
+  });
+
+  // Fallback: tools known to block on the human — still needed for old pi
+  // versions (no ui_prompt events), no-UI environments where dialogs cannot
+  // open, and wait tools that block without a ctx.ui dialog. Shares the
+  // cooldown with ui_prompt_start so one waiting span notifies once.
   pi.on("tool_execution_start", async (event) => {
     if (waitTools.has(event.toolName)) {
-      notify("Pi", "Waiting for your answer");
+      notifyWaiting(waitingBody(undefined));
     }
   });
 }

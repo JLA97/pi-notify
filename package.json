@@ -1,6 +1,6 @@
 {
   "name": "pi-notify",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Native terminal notifications (OSC 777/99, Windows toast) when Pi finishes a run or pauses waiting for your answer.",
   "keywords": [
     "pi-package"
@@ -19,7 +19,7 @@
     "@earendil-works/pi-coding-agent": ">=0.84.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.86.0",
     "@types/node": "^24.13.3",
     "tsx": "^4.23.12",
     "typescript": "^5.9.3"

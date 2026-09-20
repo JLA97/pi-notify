@@ -4,12 +4,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import notifyExtension, {
   buildOSC777,
   buildOSC99Parts,
+  createWaitingNotifier,
   isDisabled,
   macosNotificationScript,
   notify,
   parseWaitTools,
   pickBackend,
+  waitingBody,
   windowsToastScript,
+  WAITING_NOTIFY_COOLDOWN_MS,
 } from "../extensions/index.ts";
 
 type Handler = (event?: unknown) => Promise<void> | void;
@@ -56,12 +59,19 @@ function captureStdout(fn: () => void): string[] {
   return chunks;
 }
 
-test("extension registers agent_settled and tool_execution_start", () => {
+/** Register a fresh extension instance; its waiting-cooldown state starts empty. */
+function registerFresh(): CapturedHandlers {
   const captured: CapturedHandlers = { events: [], handlers: new Map() };
   notifyExtension(register(captured));
+  return captured;
+}
+
+test("extension registers agent_settled, ui_prompt_start, and tool_execution_start", () => {
+  const captured = registerFresh();
   assert.deepEqual([...captured.handlers.keys()].sort(), [
     "agent_settled",
     "tool_execution_start",
+    "ui_prompt_start",
   ]);
 });
 
@@ -79,8 +89,7 @@ test("extension registers nothing when disabled", () => {
 });
 
 test("agent_settled handler emits a notification", () => {
-  const captured: CapturedHandlers = { events: [], handlers: new Map() };
-  notifyExtension(register(captured));
+  const captured = registerFresh();
   const chunks = captureStdout(() => void captured.handlers.get("agent_settled")!());
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]!, /Pi/);
@@ -88,26 +97,92 @@ test("agent_settled handler emits a notification", () => {
 });
 
 test("tool_execution_start notifies only for configured wait tools", () => {
-  const captured: CapturedHandlers = { events: [], handlers: new Map() };
   const previous = process.env.PI_NOTIFY_WAIT_TOOLS;
   process.env.PI_NOTIFY_WAIT_TOOLS = "askUserQuestion, myWizard";
   try {
-    notifyExtension(register(captured));
+    // Fresh extension per case: the shared waiting cooldown would otherwise
+    // suppress the second notification.
+    const run = (toolName: string) => {
+      const captured = registerFresh();
+      return captureStdout(() =>
+        void captured.handlers.get("tool_execution_start")!({ toolName, args: {} }),
+      );
+    };
+
+    let chunks = run("askUserQuestion");
+    assert.equal(chunks.length, 1);
+    assert.match(chunks[0]!, /Waiting for your answer/);
+
+    chunks = run("myWizard");
+    assert.equal(chunks.length, 1);
+
+    chunks = run("bash");
+    assert.equal(chunks.length, 0);
   } finally {
     if (previous === undefined) delete process.env.PI_NOTIFY_WAIT_TOOLS;
     else process.env.PI_NOTIFY_WAIT_TOOLS = previous;
   }
-  const handler = captured.handlers.get("tool_execution_start")!;
+});
 
-  let chunks = captureStdout(() => void handler({ toolName: "askUserQuestion", args: {} }));
+test("ui_prompt_start notifies with the prompt title", () => {
+  const captured = registerFresh();
+  const chunks = captureStdout(() =>
+    void captured.handlers.get("ui_prompt_start")!({
+      type: "ui_prompt_start",
+      kind: "select",
+      title: "Which database?",
+    }),
+  );
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0]!, /Waiting: Which database\?/);
+});
+
+test("ui_prompt_start without a title uses the generic message", () => {
+  const captured = registerFresh();
+  const chunks = captureStdout(() =>
+    void captured.handlers.get("ui_prompt_start")!({ type: "ui_prompt_start", kind: "input" }),
+  );
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]!, /Waiting for your answer/);
+});
 
-  chunks = captureStdout(() => void handler({ toolName: "myWizard", args: {} }));
+test("askUserQuestion notifies once despite both triggers firing", () => {
+  const captured = registerFresh();
+  // Real ordering: the tool starts first, the dialog opens moments later.
+  const runTool = () =>
+    void captured.handlers.get("tool_execution_start")!({ toolName: "askUserQuestion", args: {} });
+  const runPrompt = () =>
+    void captured.handlers.get("ui_prompt_start")!({
+      type: "ui_prompt_start",
+      kind: "select",
+      title: "Which database?",
+    });
+  const chunks = captureStdout(() => {
+    runTool();
+    runPrompt();
+  });
   assert.equal(chunks.length, 1);
+  assert.match(chunks[0]!, /Waiting for your answer/);
+});
 
-  chunks = captureStdout(() => void handler({ toolName: "bash", args: {} }));
-  assert.equal(chunks.length, 0);
+test("waiting notifier coalesces rapid waits and re-arms after the cooldown", () => {
+  let nowMs = 10_000;
+  const sent: string[] = [];
+  const notifyWaiting = createWaitingNotifier((body) => sent.push(body), () => nowMs);
+
+  assert.equal(notifyWaiting("first"), true);
+  nowMs += 100;
+  assert.equal(notifyWaiting("second"), false); // inside the cooldown
+  nowMs += WAITING_NOTIFY_COOLDOWN_MS;
+  assert.equal(notifyWaiting("third"), true);
+  assert.deepEqual(sent, ["first", "third"]);
+});
+
+test("waitingBody squashes whitespace and caps long titles", () => {
+  assert.equal(waitingBody(undefined), "Waiting for your answer");
+  assert.equal(waitingBody("  \n\t "), "Waiting for your answer");
+  assert.equal(waitingBody("Pick a\n  database"), "Waiting: Pick a database");
+  assert.equal(waitingBody("x".repeat(300)), `Waiting: ${"x".repeat(117)}…`);
 });
 
 test("parseWaitTools defaults to askUserQuestion and honors overrides", () => {
